@@ -1,0 +1,3 @@
+#!/bin/sh
+# Disabled on the VPN server (no Wi-Fi/BT module). Overrides overlay-luckfox-buildroot-init.
+exit 0

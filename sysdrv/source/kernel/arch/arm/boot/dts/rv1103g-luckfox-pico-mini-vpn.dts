@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Luckfox Pico Mini A as WireGuard VPN server:
+ * internal FEPHY with RJ45 + link/activity LEDs, camera/audio disabled.
+ */
+
+#include "rv1103g-luckfox-pico-mini.dts"
+
+/ {
+	model = "Luckfox Pico Mini VPN";
+};
+
+/**********ETH**********/
+&gmac {
+	status = "okay";
+	local-mac-address = [d6 af ce d0 c4 c3];	/* locally administered, unicast */
+};
+
+/**********LED**********/
+/* leds node already exists (compatible + work_led) in rv1103-luckfox-pico-ipc.dtsi */
+&leds {
+	/* PIN 11 GPIO1_C5_d (UART4_M1 mux) */
+	eth_act: eth_act {
+		gpios = <&gpio1 RK_PC5 GPIO_ACTIVE_HIGH>;
+		linux,default-trigger = "netdev";
+		default-state = "off";
+	};
+
+	/* PIN 12 GPIO1_D0_d (UART3_M1 mux) */
+	eth_link: eth_link {
+		gpios = <&gpio1 RK_PD0 GPIO_ACTIVE_HIGH>;
+		linux,default-trigger = "netdev";
+		default-state = "off";
+	};
+};
+
+/**********UART**********/
+/* pins reused for LEDs, must stay disabled */
+&uart3 {
+	status = "disabled";
+};
+
+&uart4 {
+	status = "disabled";
+};
+
+/**********CAMERA / ISP / AUDIO**********/
+/* not needed on a VPN server */
+&csi2_dphy_hw {
+	status = "disabled";
+};
+
+&csi2_dphy0 {
+	status = "disabled";
+};
+
+&mipi0_csi2 {
+	status = "disabled";
+};
+
+&rkcif {
+	status = "disabled";
+};
+
+&rkcif_mipi_lvds {
+	status = "disabled";
+};
+
+&rkcif_mipi_lvds_sditf {
+	status = "disabled";
+};
+
+&rkisp {
+	status = "disabled";
+};
+
+&rkisp_vir0 {
+	status = "disabled";
+};
+
+&i2c4 {
+	status = "disabled";
+};
+
+&i2s0_8ch {
+	status = "disabled";
+};
+
+&acodec {
+	status = "disabled";
+};

@@ -1,0 +1,17 @@
+# sshd configuration for the Luckfox VPN server: key-only login.
+# See the sshd_config(5) manual page for details.
+
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+AuthorizedKeysFile	.ssh/authorized_keys
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+X11Forwarding no
+
+Subsystem	sftp	/usr/libexec/sftp-server
+
+# Rescue path: password login is still allowed over USB-RNDIS (usb0, 172.32.0.93)
+Match LocalAddress 172.32.0.93
+	PasswordAuthentication yes
+	PermitRootLogin yes

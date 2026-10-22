@@ -1,0 +1,3 @@
+#!/bin/sh
+# Disabled on the VPN server (no audio codec). Overrides overlay-luckfox-buildroot-init.
+exit 0

@@ -1,0 +1,44 @@
+#!/bin/sh
+# Fixed MAC fallback (if the DT local-mac-address lost against U-Boot)
+# and netdev LED triggers for the RJ45 link/activity LEDs. Runs before S41dhcpcd.
+
+MAC=d6:af:ce:d0:c4:c3
+DEV=eth0
+
+led_netdev() {
+	led=/sys/class/leds/$1
+	[ -d "$led" ] || return 0
+	echo netdev > "$led/trigger" 2>/dev/null
+	echo "$DEV" > "$led/device_name"
+	shift
+	for attr in "$@"; do
+		echo 1 > "$led/$attr"
+	done
+}
+
+case "$1" in
+	start)
+		if [ ! -d /sys/class/net/$DEV ]; then
+			echo "S39lan: $DEV not found"
+			exit 0
+		fi
+
+		if [ "$(cat /sys/class/net/$DEV/address)" != "$MAC" ]; then
+			echo "S39lan: setting $DEV MAC to $MAC"
+			ip link set $DEV down
+			ip link set $DEV address $MAC
+		fi
+		ip link set $DEV up
+
+		led_netdev eth_link link
+		led_netdev eth_act rx tx
+		;;
+	stop)
+		;;
+	*)
+		echo "Usage: $0 {start|stop}"
+		exit 1
+		;;
+esac
+
+exit 0

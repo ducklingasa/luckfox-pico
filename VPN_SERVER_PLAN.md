@@ -52,6 +52,7 @@
 | Device tree | `sysdrv/source/kernel/arch/arm/boot/dts/rv1103g-luckfox-pico-mini-vpn.dts` |
 | Kernel fragment | `sysdrv/source/kernel/arch/arm/configs/luckfox_rv1106-vpn.config` |
 | Buildroot defconfig | `sysdrv/tools/board/buildroot/luckfox_pico_vpn_defconfig` |
+| BusyBox fragment | `sysdrv/tools/board/buildroot/busybox-vpn.fragment` (adds `stat`, used by `wg-quick`) |
 | Copy defconfig into Buildroot | `sysdrv/Makefile`: add a `cp .../luckfox_pico_vpn_defconfig` line next to the two existing `luckfox_pico*_defconfig` copies (both the extract and the re-extract paths) |
 | Post-build script | `project/cfg/BoardConfig_IPC/luckfox-vpn-post.sh` (must be `chmod +x`, it is executed directly) |
 | Overlay | `project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-vpn/` |
@@ -74,12 +75,14 @@ If the build breaks without `RK_APP_TYPE`, keep it and rely on the post-build sc
 
 ### 2.2 Selecting the variant
 
-`./build.sh lunch` builds names from fixed lists and won't offer the new file. Select it manually:
+`./build.sh lunch` builds names from fixed lists and won't offer the new file. Select it manually.
+`./build.sh clean` deletes `.BoardConfig.mk` itself, so link the config again after cleaning:
 
 ```sh
 cd ~/luckfox-pico
 ln -rfs project/cfg/BoardConfig_IPC/BoardConfig-SD_CARD-Buildroot-RV1103_Luckfox_Pico_Mini-VPN.mk .BoardConfig.mk
-./build.sh clean      # first time only: Buildroot/kernel configs change
+./build.sh clean      # first time only: Buildroot/kernel configs change (also removes .BoardConfig.mk)
+ln -rfs project/cfg/BoardConfig_IPC/BoardConfig-SD_CARD-Buildroot-RV1103_Luckfox_Pico_Mini-VPN.mk .BoardConfig.mk
 ./build.sh
 ```
 
@@ -163,9 +166,12 @@ BR2_PACKAGE_WIREGUARD_TOOLS=y
 BR2_PACKAGE_IPROUTE2=y
 BR2_PACKAGE_LIBQRENCODE=y
 BR2_PACKAGE_LIBQRENCODE_TOOLS=y
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="../../../tools/board/buildroot/busybox-vpn.fragment"
 ```
 
-Already present and reused: `bash`, `openssh`, `iptables` (legacy), `ntp` (ntpd), `iperf3`, `curl`. BusyBox provides `flock`, `tar`, `date`, `mktemp`.
+The BusyBox fragment enables `CONFIG_STAT` + `CONFIG_FEATURE_STAT_FORMAT`. `wg-quick` calls `stat -c '0%#a'` for its permission check; without it every `up`/`down`/`strip` prints `stat: not found` noise. The path is relative to the Buildroot top dir and only affects this variant.
+
+Already present and reused: `bash`, `openssh`, `iptables` (legacy), `ntp` (ntpd), `iperf3`, `curl`. BusyBox provides `flock`, `tar`, `date`, `mktemp` (BusyBox `tar` has no gzip support, so the scripts pipe through `gzip`).
 Optional slimming: drop Python, Samba and other unused packages from this defconfig to save RAM and space.
 
 ### 4.2 Post-build script `luckfox-vpn-post.sh`
@@ -175,9 +181,10 @@ Runs after rootfs assembly and **before** the overlays are copied. It removes st
 ```bash
 #!/bin/bash
 R=$RK_PROJECT_PACKAGE_ROOTFS_DIR/etc/init.d
-rm -f $R/S21appinit $R/S50telnet $R/S99_auto_reboot $R/S60micinit $R/S99hciinit
+rm -f $R/S21appinit $R/S50telnet $R/S99_auto_reboot
 ```
 
+`S60micinit` and `S99hciinit` come from `overlay-luckfox-buildroot-init`, which is copied **after** this script, so deleting them here has no effect. `overlay-luckfox-vpn` overrides them with no-op scripts instead.
 Keep `S20linkmount` (mounts `/userdata`), `S50usbdevice` and `S99usb0config`. USB-RNDIS at `172.32.0.93` stays available as a rescue path.
 
 ### 4.3 Overlay tree `overlay-luckfox-vpn/`
@@ -187,15 +194,17 @@ etc/
 ├── dhcpcd.conf                      # clientid instead of duid, denyinterfaces wg* usb0
 ├── iptables.conf                    # firewall + NAT (restored by S35iptables)
 ├── sysctl.d/99-wireguard.conf       # net.ipv4.ip_forward=1
-├── ssh/sshd_config                  # key-only
+├── ssh/sshd_config                  # key-only (password only over USB 172.32.0.93)
 ├── pivpn/wireguard/setupVars.conf   # non-secret settings (port, subnet, DNS, endpoint...)
 └── init.d/
     ├── S38harden                    # chmod 0600 /etc/shadow (overlay rsync makes it 0644)
     ├── S39lan                       # fixed MAC fallback + netdev LEDs (before S41dhcpcd)
-    └── S48wireguard                 # first-boot keygen + wg-quick up/down
+    ├── S48wireguard                 # first-boot keygen + wg-quick up/down
+    ├── S60micinit                   # no-op override (no audio)
+    └── S99hciinit                   # no-op override (no Wi-Fi/BT)
 root/.ssh/authorized_keys            # PUBLIC key(s) only
 usr/sbin/pivpn                       # CLI dispatcher
-opt/pivpn/*.sh                       # sub-commands
+opt/pivpn/*.sh                       # sub-commands (common.sh = shared helpers)
 ```
 
 **Never** put private keys, PSKs or password hashes you care about in the overlay. They would end up in git and world-readable.
@@ -286,7 +295,7 @@ COMMIT
 
 * SSH on `eth0` is only reachable from the LAN because the router forwards only UDP 51820.
 * Client-to-client traffic (`wg0 -> wg0`) is blocked by default. Add `-A FORWARD -i wg0 -o wg0 -j ACCEPT` if needed.
-* `S35iptables stop` runs `iptables-save -f /etc/iptables.conf`, so runtime changes get persisted on shutdown.
+* `S35iptables stop` only flushes the rules (`iptables -F`); it does not save them. Persist runtime changes explicitly with `/etc/init.d/S35iptables save`.
 
 ## 6. WireGuard server
 
@@ -381,7 +390,7 @@ PersistentKeepalive = 25
 | `pivpn qrcode name` | `-qr` | `qrencode -t ansiutf8 < configs/name.conf` |
 | `pivpn off name` / `pivpn on name` | `-off` / `-on` | Comment out or restore the peer block with a `#[disabled] ` prefix, syncconf |
 | `pivpn backup` | `-bk` | `tar czf $BACKUP_DIR/pivpnbackup-$(date +%Y%m%d-%H%M%S).tgz` of `/userdata/wireguard` + `/etc/pivpn`, chmod 600, keep the last 5, print an `scp` hint |
-| `pivpn restore file.tgz` | `-rs` | Validate the archive, confirm, `wg-quick down`, extract, fix permissions, `wg-quick up` |
+| `pivpn restore file.tgz` | `-rs` | Validate the archive (only `userdata/wireguard` + `etc/pivpn` paths), confirm, `wg-quick down`, extract via a temp dir, keep the old state in `/userdata/wireguard.prev`, fix permissions, `wg-quick up` |
 | `pivpn help` | `-h` | Usage |
 
 Time note: the Mini has no RTC. Creation dates and handshake times are only correct after ntpd (`S49ntp`) has synced. WireGuard itself works regardless.
@@ -390,7 +399,8 @@ Time note: the Mini has no RTC. Creation dates and handshake times are only corr
 
 * Telnet is removed (post-build script).
 * `sshd_config`: `PermitRootLogin prohibit-password`, `PasswordAuthentication no`, `KbdInteractiveAuthentication no`.
-  **Test key login first**. Serial console and USB `172.32.0.93` remain as rescue paths.
+  A `Match LocalAddress 172.32.0.93` block still allows password login over USB-RNDIS as a rescue path.
+  **Add your public key to `overlay-luckfox-vpn/root/.ssh/authorized_keys` before building and test key login first**. Serial console and USB `172.32.0.93` remain as rescue paths.
 * Change the root password on first login with `passwd`. Do not put a plaintext password in the defconfig.
 * `S38harden` runs `chmod 0600 /etc/shadow` at boot.
 * `WIREGUARD_DEBUG` is disabled.
@@ -404,6 +414,8 @@ Time note: the Mini has no RTC. Creation dates and handshake times are only corr
 4. Test from **mobile data**, not Wi-Fi. Many routers lack NAT loopback.
 
 ## 10. Build, flash, update
+
+* All SD-card board variants use a fixed `6G(rootfs)` partition (6 GiB = 6,442,450,944 bytes), rather than consuming the rest of the card. Remaining card space is outside the configured partitions; use an 8 GB or larger card. Regenerate firmware and recreate the card to apply this layout change; back up VPN state off-device first.
 
 * First flash: `output/image/sd_update.img`. This also **overwrites `/userdata`**, so run `pivpn backup` and `scp` the archive off the device before every full reflash.
 * Later updates: write only `boot.img` / `rootfs.img` to their partitions. Layout: `env, idblock, uboot, boot, userdata, rootfs`; check partition numbers with `lsblk` first. This keeps `/userdata`.

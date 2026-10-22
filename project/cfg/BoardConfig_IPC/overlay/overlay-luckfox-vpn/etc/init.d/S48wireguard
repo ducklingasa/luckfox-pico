@@ -1,0 +1,106 @@
+#!/bin/sh
+# WireGuard server: first-boot key generation on /userdata and wg-quick up/down.
+
+SETUPVARS=/etc/pivpn/wireguard/setupVars.conf
+WGDATA=/userdata/wireguard
+WGLINK=/etc/wireguard
+
+[ -r "$SETUPVARS" ] || { echo "S48wireguard: $SETUPVARS missing"; exit 1; }
+. "$SETUPVARS"
+
+IFACE=${pivpnDEV:-wg0}
+
+wait_userdata() {
+	i=0
+	while ! mountpoint -q /userdata; do
+		i=$((i + 1))
+		[ $i -ge 30 ] && return 1
+		sleep 1
+	done
+	return 0
+}
+
+prepare() {
+	umask 077
+
+	mkdir -p "$WGDATA/keys" "$WGDATA/configs" || return 1
+	chmod 0700 "$WGDATA" "$WGDATA/keys" "$WGDATA/configs"
+	[ -f "$WGDATA/configs/clients.txt" ] || : > "$WGDATA/configs/clients.txt"
+
+	# /etc/wireguard -> /userdata/wireguard (replace an empty stock directory)
+	if [ -d "$WGLINK" ] && [ ! -L "$WGLINK" ]; then
+		rmdir "$WGLINK" 2>/dev/null || mv "$WGLINK" "$WGLINK.orig"
+	fi
+	[ "$(readlink "$WGLINK")" = "$WGDATA" ] || ln -sfn "$WGDATA" "$WGLINK"
+
+	if [ ! -s "$WGDATA/server_priv" ]; then
+		echo "S48wireguard: generating server keys"
+		wg genkey > "$WGDATA/server_priv" || return 1
+		wg pubkey < "$WGDATA/server_priv" > "$WGDATA/server_pub" || return 1
+	fi
+
+	if [ ! -f "$WGDATA/$IFACE.conf" ]; then
+		echo "S48wireguard: creating $WGDATA/$IFACE.conf"
+		cat > "$WGDATA/$IFACE.conf" <<-EOF
+		[Interface]
+		Address = ${pivpnNET%.*}.1/${subnetClass}
+		ListenPort = ${pivpnPORT}
+		MTU = ${pivpnMTU}
+		PrivateKey = $(cat "$WGDATA/server_priv")
+
+		EOF
+	fi
+
+	chmod 0600 "$WGDATA"/server_priv "$WGDATA"/server_pub "$WGDATA/$IFACE.conf"
+	return 0
+}
+
+start() {
+	printf 'Starting WireGuard (%s): ' "$IFACE"
+	if ! wait_userdata; then
+		echo "FAIL (/userdata not mounted)"
+		return 1
+	fi
+	if ! prepare; then
+		echo "FAIL (could not prepare $WGDATA)"
+		return 1
+	fi
+	if ip link show "$IFACE" >/dev/null 2>&1; then
+		echo "already up"
+		return 0
+	fi
+	if wg-quick up "$IFACE" >/var/log/wg-quick.log 2>&1; then
+		echo "OK"
+	else
+		echo "FAIL (see /var/log/wg-quick.log)"
+		return 1
+	fi
+}
+
+stop() {
+	printf 'Stopping WireGuard (%s): ' "$IFACE"
+	if ! ip link show "$IFACE" >/dev/null 2>&1; then
+		echo "not running"
+		return 0
+	fi
+	if wg-quick down "$IFACE" >/var/log/wg-quick.log 2>&1; then
+		echo "OK"
+	else
+		echo "FAIL (see /var/log/wg-quick.log)"
+		return 1
+	fi
+}
+
+case "$1" in
+	start|stop)
+		"$1"
+		;;
+	restart|reload)
+		stop
+		start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

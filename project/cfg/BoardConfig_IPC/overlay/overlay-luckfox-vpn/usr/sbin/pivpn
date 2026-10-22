@@ -1,0 +1,31 @@
+#!/bin/bash
+# pivpn-style CLI for the Luckfox WireGuard server.
+# Written from scratch in the style of PiVPN (https://pivpn.io).
+
+SCRIPTDIR=/opt/pivpn
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "::: pivpn must be run as root" >&2
+	exit 1
+fi
+
+cmd=$1
+[ $# -gt 0 ] && shift
+
+case "$cmd" in
+	-a | add) exec "$SCRIPTDIR/add.sh" "$@" ;;
+	-r | remove) exec "$SCRIPTDIR/remove.sh" "$@" ;;
+	-l | list) exec "$SCRIPTDIR/list.sh" "$@" ;;
+	-c | clients) exec "$SCRIPTDIR/clients.sh" "$@" ;;
+	-qr | qrcode) exec "$SCRIPTDIR/qrcode.sh" "$@" ;;
+	-off | off) exec "$SCRIPTDIR/onoff.sh" off "$@" ;;
+	-on | on) exec "$SCRIPTDIR/onoff.sh" on "$@" ;;
+	-bk | backup) exec "$SCRIPTDIR/backup.sh" "$@" ;;
+	-rs | restore) exec "$SCRIPTDIR/restore.sh" "$@" ;;
+	"" | -h | help) exec "$SCRIPTDIR/help.sh" ;;
+	*)
+		echo "::: Unknown command: $cmd" >&2
+		"$SCRIPTDIR/help.sh" >&2
+		exit 1
+		;;
+esac

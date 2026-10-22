@@ -1,0 +1,24 @@
+#!/bin/sh
+# The overlay rsync makes every file world-readable (go=rX); tighten secrets.
+
+case "$1" in
+	start)
+		chmod 0600 /etc/shadow
+		[ -f /etc/samba/smbpasswd ] && chmod 0600 /etc/samba/smbpasswd
+		# Overlay files retain the build user's ownership; sshd requires root ownership.
+		chown root:root /root /root/.ssh || exit 1
+		chmod 0700 /root /root/.ssh || exit 1
+		if [ -f /root/.ssh/authorized_keys ]; then
+			chown root:root /root/.ssh/authorized_keys || exit 1
+			chmod 0600 /root/.ssh/authorized_keys || exit 1
+		fi
+		;;
+	stop)
+		;;
+	*)
+		echo "Usage: $0 {start|stop}"
+		exit 1
+		;;
+esac
+
+exit 0
