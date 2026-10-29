@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LuckFox VPN</title>
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <span class="wg-logo" role="img" aria-label="WireGuard logo"></span>
+    <span class="eyebrow">LUCKFOX</span><h1>WireGuard</h1>
+    <p class="muted">Your private gateway</p>
+    <nav aria-label="Main navigation">
+      <button data-page="dashboard" aria-current="page">Dashboard</button>
+      <button data-page="clients">Clients</button>
+      <button data-page="system">System / Settings</button>
+      <button data-page="backups">Backups</button>
+    </nav>
+    <button id="logout" class="secondary">Log out</button>
+    <p class="muted">LAN only &middot; HTTP :8080<br>30-minute sessions</p>
+  </aside>
+  <div class="workspace">
+    <header><span class="eyebrow">VPN CONTROL CENTER</span><h2 id="page-title">Dashboard</h2></header>
+    <p class="notice">HTTP is unencrypted. Use only a trusted LAN. Never expose this service to the internet.</p>
+    <p id="message" role="status" aria-live="polite">Loading...</p>
+    <main id="protected" hidden>
+      <section id="dashboard" class="page">
+        <div class="cards">
+          <article><h3>WireGuard</h3><strong id="vpn-state">Unavailable</strong><p id="vpn-detail"></p></article>
+          <article><h3>Recent peers</h3><strong id="recent">Unavailable</strong><p>Handshake within 180 seconds, not proof of reachability.</p></article>
+          <article><h3>Uptime</h3><strong id="uptime">Unavailable</strong><p>Since the last system boot</p></article>
+        </div>
+        <article><h3>At a glance</h3><p id="glance"></p><p class="muted">System / Settings has resource details and the global LED control.</p></article>
+      </section>
+      <section id="system" class="page" hidden>
+        <article class="appearance"><div><h3>Appearance</h3><p>Light by default. Your choice is remembered in this browser, including after logout.</p><p id="theme-status" class="muted" role="status"></p></div><div class="switch-field"><span id="theme-label">Dark mode</span><button id="theme-toggle" class="toggle" type="button" role="switch" aria-checked="false" aria-labelledby="theme-label" aria-describedby="theme-status"><span class="toggle-thumb"></span></button></div></article>
+        <div class="cards">
+          <article><h3>CPU</h3><strong id="cpu">Sampling...</strong><p id="load"></p><canvas id="cpu-chart" width="300" height="70" aria-label="Recent CPU utilization chart"></canvas></article>
+          <article><h3>Memory</h3><strong id="memory"></strong><p id="swap"></p></article>
+          <article><h3>Temperature</h3><strong id="temperature"></strong><p>No sensor means unavailable, not zero.</p></article>
+        </div>
+        <div class="cards">
+          <article><h3>Network throughput</h3><p id="network"></p><canvas id="net-chart" width="300" height="70" aria-label="Recent LAN receive and transmit throughput chart"></canvas><p class="muted">RX (green), TX (blue). Rates require two samples.</p></article>
+          <article><h3>Storage</h3><div id="storage"></div></article>
+          <article><h3>System LEDs</h3><strong id="led-state"></strong><p>One control for Ethernet link/activity and work LEDs. Trigger configuration, not current illumination. Reboot may re-enable them.</p><div class="switch-field"><span id="led-label">System LEDs</span><button id="led-toggle" class="toggle" type="button" role="switch" aria-checked="false" aria-labelledby="led-label" aria-describedby="led-state"><span class="toggle-thumb"></span></button></div><p id="led-help" class="muted"></p></article>
+        </div>
+        <article><h3>WireGuard settings (read-only)</h3><dl id="settings"></dl></article>
+        <p class="muted">Charts are short, browser-only history. No process table or persistent monitoring. Unavailable values are shown explicitly.</p>
+      </section>
+      <section id="clients" class="page" hidden>
+        <article class="clients-card">
+          <div class="clients-header"><h3>Clients</h3><button id="new-client" class="secondary" type="button"><span aria-hidden="true">+</span> New</button></div>
+          <ul id="client-rows" class="client-list" aria-label="VPN clients"></ul>
+        </article>
+        <p class="muted">RX / TX rates are from the server's perspective and need two samples. Totals are since the current wg0 start, not lifetime usage. A recent handshake is not proof of reachability. Expand a client for details; timestamps are approximate until NTP synchronizes.</p>
+      </section>
+      <section id="backups" class="page" hidden>
+        <article>
+          <h3>VPN backups</h3>
+          <p class="notice">Archives are unencrypted and contain VPN private keys. Keep an off-device copy. Restore restarts wg0 and replaces keys, clients and settings; .prev is not a full rollback of /etc/pivpn.</p>
+          <button id="create-backup">Create backup</button>
+          <form id="upload-backup" class="actions"><label>Upload .tgz (maximum 16 MiB)<input id="backup-file" type="file" accept=".tgz,.gz,application/gzip" required></label><button type="submit">Upload</button></form>
+          <p class="muted">Backups made with this appliance's pivpn backup command before the web UI are supported. Upload the original .tgz without unpacking or converting it. Restoring a VPN backup does not change your web UI password.</p>
+          <p class="muted">Uploads keep the original filename and use the upload time as the modified time. A same-named backup is replaced only after validation. Creating a backup retains the newest five archives; uploaded archives are subject to that retention on the next creation.</p>
+          <div class="table-wrap"><table><thead><tr><th>Archive</th><th>Size</th><th>Modified (approx.)</th><th>Actions</th></tr></thead><tbody id="backup-rows"></tbody></table></div>
+        </article>
+      </section>
+    </main>
+  </div>
+  <dialog id="qr-dialog"><h2>Client credential</h2><p>Anyone scanning this QR can use this VPN identity.</p><img id="qr-image" alt="WireGuard client configuration QR"><button id="close-qr">Close</button></dialog>
+  <dialog id="add-dialog" aria-labelledby="add-title"><h2 id="add-title">New client</h2><form id="add-client"><label>Client name<input id="client-name" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,14}" maxlength="15" required></label><p class="muted">1-15 letters, digits, dots, underscores or hyphens; start with a letter or digit.</p><div class="actions"><button type="submit">Add client</button><button id="cancel-add" class="secondary" type="button">Cancel</button></div></form></dialog>
+</body>
+</html>

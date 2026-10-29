@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'">
+  <title>LuckFox VPN - Sign in</title>
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/login.js" defer></script>
+</head>
+<body class="login-page">
+  <div class="login-theme"><div class="switch-field"><span id="theme-label">Dark mode</span><button id="theme-toggle" class="toggle" type="button" role="switch" aria-checked="false" aria-labelledby="theme-label" aria-describedby="theme-status"><span class="toggle-thumb"></span></button></div><p id="theme-status" class="muted" role="status"></p></div>
+  <main class="login-card">
+    <span class="wg-logo" role="img" aria-label="WireGuard logo"></span>
+    <span class="eyebrow">LUCKFOX / WIREGUARD</span>
+    <h1 id="title">Sign in</h1>
+    <p class="muted">Private network. Simple control.</p>
+    <p class="notice">Trusted LAN only. HTTP is not encrypted: passwords, session cookies, profiles and backups can be observed on the network. Never port-forward this service.</p>
+    <p id="message" role="status" aria-live="polite">Checking device...</p>
+    <form id="auth" hidden>
+      <label id="token-label" hidden>One-time setup token
+        <input id="token" autocomplete="off" spellcheck="false" maxlength="64">
+      </label>
+      <p id="setup-help" class="muted" hidden>Retrieve the token through trusted console/SSH: <code>cat /userdata/webui/setup-token</code>. Set a unique 8-32 character password with at least one lowercase letter, one uppercase letter, and one number. This does not change Linux, SSH or VPN credentials.</p>
+      <label>Password
+        <input id="password" type="password" autocomplete="current-password" maxlength="128" required>
+        <ul id="password-criteria" class="password-criteria muted" aria-live="polite" hidden>
+          <li id="password-length" data-valid="false">Length 8-32 characters: not met</li>
+          <li id="password-lowercase" data-valid="false">Lowercase letter: not met</li>
+          <li id="password-uppercase" data-valid="false">Uppercase letter: not met</li>
+          <li id="password-number" data-valid="false">Number: not met</li>
+        </ul>
+      </label>
+      <label id="confirm-label" hidden>Confirm password
+        <input id="confirm" type="password" autocomplete="new-password" maxlength="128">
+        <p id="password-match" class="muted" role="status" aria-live="polite"></p>
+      </label>
+      <button id="submit" type="submit">Sign in</button>
+    </form>
+    <p class="muted">Sessions expire 30 minutes after sign-in, even while the page is open. Lost password? Recover through console/SSH.</p>
+  </main>
+</body>
+</html>

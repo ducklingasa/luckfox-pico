@@ -9,6 +9,9 @@ KbdInteractiveAuthentication no
 PermitEmptyPasswords no
 X11Forwarding no
 
+# SSH command sessions do not read /etc/profile.
+SetEnv LANG=en_US.UTF-8
+
 Subsystem	sftp	/usr/libexec/sftp-server
 
 # Rescue path: password login is still allowed over USB-RNDIS (usb0, 172.32.0.93)

@@ -1,0 +1,65 @@
+#!/bin/sh
+
+umask 077
+exec 8>/run/system-leds.lock || exit 1
+flock -n 8 || { echo "system-leds: another LED operation is running" >&2; exit 1; }
+
+trigger() {
+	led=/sys/class/leds/$1
+	if [ ! -d "$led" ] || ! grep -qw "$2" "$led/trigger"; then
+		echo "system-leds: $1 or trigger $2 unavailable" >&2
+		return 1
+	fi
+	printf '%s\n' "$2" >"$led/trigger"
+}
+
+work() {
+	trigger work activity
+}
+
+ethernet_led() {
+	name=$1
+	shift
+	trigger "$name" netdev || return 1
+	printf '%s\n' eth0 >"$led/device_name" || return 1
+	# Clear unused attributes too, so enabling restores the intended configuration.
+	for attr in link rx tx; do
+		value=0
+		for selected in "$@"; do
+			[ "$attr" = "$selected" ] && value=1
+		done
+		printf '%s\n' "$value" >"$led/$attr" || return 1
+	done
+}
+
+ethernet() {
+	result=0
+	ethernet_led eth_link link || result=1
+	ethernet_led eth_act rx tx || result=1
+	return "$result"
+}
+
+off() {
+	result=0
+	for name in eth_link eth_act work; do
+		if trigger "$name" none; then
+			printf '%s\n' 0 >"$led/brightness" || result=1
+		else
+			result=1
+		fi
+	done
+	return "$result"
+}
+
+case "$1" in
+	work) work ;;
+	ethernet) ethernet ;;
+	on)
+		result=0
+		work || result=1
+		ethernet || result=1
+		exit "$result"
+		;;
+	off) off ;;
+	*) echo "Usage: system-leds {on|off|work|ethernet}" >&2; exit 1 ;;
+esac

@@ -1,0 +1,114 @@
+#!/bin/sh
+
+PIDFILE=/run/httpd.pid
+LOG=/var/log/httpd.log
+
+valid_pid() {
+	case "$1" in ""|*[!0-9]*) return 1 ;; esac
+	[ "$1" -gt 1 ] || return 1
+	[ -r "/proc/$1/cmdline" ] || return 1
+	tr '\000' ' ' 2>/dev/null <"/proc/$1/cmdline" | grep -q '^/bin/sh /etc/init.d/S49httpd supervise'
+}
+
+supervise() {
+	child=
+	trap 'if [ -n "$child" ]; then kill "$child" 2>/dev/null; wait "$child"; fi; exit 0' TERM INT
+	umask 077
+	# Keep retrying without blocking the remaining boot sequence.
+	while :; do
+		if mountpoint -q /userdata; then
+			/usr/bin/python3 -I /opt/vpn-web/webui.py --init &
+			child=$!
+			if wait "$child"; then
+				child=
+				break
+			fi
+			child=
+			echo "S49httpd: authentication storage unavailable; retrying" >&2
+		fi
+		sleep 5 &
+		child=$!
+		wait "$child"
+		child=
+	done
+	while :; do
+		address=$(ip -4 -o addr show dev eth0 scope global 2>/dev/null |
+			awk 'NR == 1 { split($4, a, "/"); print a[1]; exit }')
+		[ -n "$address" ] && break
+		sleep 5 &
+		child=$!
+		wait "$child"
+		child=
+	done
+	# Reposition the guard before broad USB/established-connection accepts.
+	if iptables -C INPUT ! -i eth0 -p tcp --dport 8080 -j DROP 2>/dev/null; then
+		iptables -D INPUT ! -i eth0 -p tcp --dport 8080 -j DROP || exit 1
+	fi
+	iptables -I INPUT 1 ! -i eth0 -p tcp --dport 8080 -j DROP || exit 1
+	if ! iptables -C INPUT -i eth0 -p tcp --dport 8080 -j ACCEPT 2>/dev/null; then
+		iptables -I INPUT 1 -i eth0 -p tcp --dport 8080 -j ACCEPT || exit 1
+	fi
+	echo "S49httpd: listening on $address:8080 (trusted LAN HTTP only)"
+	/bin/busybox httpd -f -p "$address:8080" -h /var/www -c /etc/httpd.conf &
+	child=$!
+	wait "$child"
+	result=$?
+	echo "S49httpd: listener exited ($result); restart service to retry" >&2
+	exit "$result"
+}
+
+start() {
+	if [ -r "$PIDFILE" ]; then
+		pid=$(cat "$PIDFILE")
+		if valid_pid "$pid"; then
+			echo "S49httpd: already running or waiting for LAN"
+			return 0
+		fi
+		rm -f "$PIDFILE" || return 1
+	fi
+	/bin/sh /etc/init.d/S49httpd supervise 9>&- >>"$LOG" 2>&1 &
+	pid=$!
+	if ! printf '%s\n' "$pid" >"$PIDFILE"; then
+		kill "$pid"
+		return 1
+	fi
+	sleep 1
+	if ! kill -0 "$pid" 2>/dev/null; then
+		echo "S49httpd: startup failed; see $LOG" >&2
+		rm -f "$PIDFILE"
+		return 1
+	fi
+	echo "S49httpd: started (see $LOG for LAN readiness)"
+}
+
+stop() {
+	[ -r "$PIDFILE" ] || return 0
+	pid=$(cat "$PIDFILE")
+	if valid_pid "$pid"; then
+		kill "$pid" || return 1
+		i=0
+		while valid_pid "$pid"; do
+			i=$((i + 1))
+			[ "$i" -lt 10 ] || { echo "S49httpd: stop timed out" >&2; return 1; }
+			sleep 1
+		done
+	elif kill -0 "$pid" 2>/dev/null; then
+		echo "S49httpd: refusing to stop unrelated PID" >&2
+		return 1
+	fi
+	rm -f "$PIDFILE"
+	echo "S49httpd: stopped"
+}
+
+if [ "$1" != supervise ]; then
+	exec 9>/run/httpd-control.lock || exit 1
+	flock -n 9 || { echo "S49httpd: another service operation is running" >&2; exit 1; }
+fi
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart|reload) stop && start ;;
+	supervise) supervise ;;
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

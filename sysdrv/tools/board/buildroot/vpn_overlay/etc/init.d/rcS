@@ -1,0 +1,19 @@
+#!/bin/sh
+
+. /etc/profile.d/locale.sh || exit 1
+
+for i in /etc/init.d/S??*; do
+	[ -f "$i" ] || continue
+	case "$i" in
+		*.sh)
+			(
+				trap - INT QUIT TSTP
+				set start
+				. "$i"
+			)
+			;;
+		*)
+			"$i" start
+			;;
+	esac
+done

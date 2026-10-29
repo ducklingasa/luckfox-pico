@@ -85,6 +85,85 @@ Important implementation details:
 8. Restore keeps the previous WireGuard data directory at
    `/userdata/wireguard.prev`. A subsequent restore replaces that previous copy.
 
+### 2.1 Locale and UTF-8 support
+
+The VPN Buildroot defconfig builds its own uClibc-ng toolchain with locale,
+wide-character, C++, and stack-protector support, using Linux 5.10 headers.
+The shared Rockchip compiler remains in use for the SDK kernel and other
+SDK components; its libc is not used for the VPN Buildroot packages.
+Other board defconfigs continue to use their existing external toolchain.
+The SDK rootfs-preparation step skips the Rockchip runtime-library archive
+for this VPN defconfig, avoiding stale libraries in `/lib` taking precedence
+over Buildroot's new compiler runtime.
+
+The VPN rootfs generates `en_US.UTF-8` and enables BusyBox locale/Unicode
+support. Its [locale profile](./sysdrv/tools/board/buildroot/vpn_overlay/etc/profile.d/locale.sh)
+sets `LANG=en_US.UTF-8`; the VPN
+[boot script](./sysdrv/tools/board/buildroot/vpn_overlay/etc/init.d/rcS)
+sources the same file before starting services. `LC_ALL` is deliberately not
+exported so per-category locale overrides remain possible. `C.UTF-8` is not
+assumed to exist in uClibc. The VPN SSH server also sets `LANG=en_US.UTF-8`
+for command sessions that do not read the login profile.
+
+This enables libc/POSIX locales. GCC's upstream uClibc target uses the generic
+libstdc++ locale model: C++ code can use `setlocale` and multibyte functions,
+but constructing a named `std::locale("en_US.UTF-8")` is not supported.
+
+Changing the toolchain requires a clean rebuild, not an incremental package
+rebuild. With the VPN board selected, run:
+
+```sh
+./build.sh clean rootfs
+make -C sysdrv/source/buildroot/buildroot-2023.02.6 clean
+./build.sh rootfs
+./build.sh firmware
+```
+
+The SDK's `clean rootfs` alone does not remove the old Buildroot toolchain.
+Reflash the rebuilt firmware before checking the board; an older image still
+contains the original libc.
+
+To check the generated ARM libc under QEMU from the SDK root:
+
+```sh
+BR=sysdrv/source/buildroot/buildroot-2023.02.6
+"$BR/output/host/bin/arm-buildroot-linux-uclibcgnueabihf-gcc" \
+    -Wall -Wextra -Werror \
+    sysdrv/tools/board/buildroot/tests/test_vpn_locale.c -o /tmp/test-vpn-locale
+SYSROOT=$("$BR/output/host/bin/arm-buildroot-linux-uclibcgnueabihf-gcc" -print-sysroot)
+LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \
+    qemu-arm -L "$SYSROOT" /tmp/test-vpn-locale
+```
+
+On the board, login over SSH and check:
+
+```sh
+printf 'LANG=%s\n' "$LANG"
+python3 -c 'import locale; print(locale.setlocale(locale.LC_ALL, "")); print(locale.nl_langinfo(locale.CODESET))'
+```
+
+The results must show `en_US.UTF-8` and `UTF-8`, without a locale error.
+Run the C test on the board as well to verify multibyte decoding, encoding,
+and wide-character classification.
+
+Midnight Commander uses ncurses alternate-character-set (ACS) line drawing.
+Some UTF-8 terminals display these borders as literal `q`, `x`, and corner
+letters even though Unicode text works. The VPN
+[MC profile](./sysdrv/tools/board/buildroot/vpn_overlay/etc/profile.d/mc.sh)
+defines an interactive-shell alias that runs MC with `NCURSES_NO_UTF8_ACS=1`,
+making ncurses use Unicode borders in a UTF-8 locale. The setting is scoped
+to MC; other applications and noninteractive shells are unchanged.
+
+After rebuilding and flashing the VPN image, log in again and run `alias mc`
+to check that the workaround is active, then launch `mc` to verify its borders.
+On an existing image, test it without rebuilding:
+
+```sh
+NCURSES_NO_UTF8_ACS=1 mc
+```
+
+Changing MC's display codepage alone does not change ncurses ACS handling.
+
 ## 3. Required SSH public-key format
 
 ### 3.1 OpenSSH authorized_keys format

@@ -23,18 +23,7 @@ done
 [ -n "$file" ] || die "Usage: pivpn restore <pivpnbackup-*.tgz> [-y]"
 [ -f "$file" ] || die "$file not found"
 
-# Only accept archives that contain nothing but our two trees
-entries=$(gzip -dc "$file" | tar -tf -) || die "$file is not a valid .tgz archive"
-while IFS= read -r e; do
-	e=${e#./}
-	case "$e" in
-		*..*) die "Refusing archive: suspicious path '$e'" ;;
-		userdata/wireguard | userdata/wireguard/* | etc/pivpn | etc/pivpn/*) ;;
-		*) die "Refusing archive: unexpected path '$e'" ;;
-	esac
-done <<<"$entries"
-grep -qxE "(\./)?userdata/wireguard/${pivpnDEV}\.conf" <<<"$entries" ||
-	die "Archive does not contain userdata/wireguard/$pivpnDEV.conf"
+python3 -I /opt/pivpn/archive.py "$file" || die "Archive validation failed"
 
 if [ $yes -eq 0 ]; then
 	echo "::: This replaces the current server keys, clients and settings with the contents of"
@@ -47,7 +36,7 @@ take_lock
 
 tmp=$(mktemp -d /userdata/.pivpn-restore.XXXXXX) || die "mktemp failed"
 trap 'rm -rf "$tmp"' EXIT
-gzip -dc "$file" | tar -C "$tmp" -xf - || die "Extraction failed"
+python3 -I /opt/pivpn/archive.py "$file" "$tmp" || die "Validated extraction failed"
 [ -f "$tmp/userdata/wireguard/$pivpnDEV.conf" ] || die "Extracted archive has no $pivpnDEV.conf"
 
 if wg_running; then

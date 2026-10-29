@@ -283,6 +283,7 @@ SYSDRV_BUSYBOX_OBJS_OUTPUT_DIR ?= $(BUSYBOX_DIR)/objs_$(BUSYBOX_CFG)
 BUILDROOT_CFG ?= config_normal
 BUILDROOT_VER ?= buildroot-2023.02.6
 BUILDROOT_DIR := $(SYSDRV_DIR)/source/buildroot
+BUILDROOT_CUSTOM_PACKAGE_SETUP := $(SYSDRV_DIR)/tools/board/buildroot/install-custom-packages.sh
 
 CUSTOM_VER ?= custom
 
@@ -522,6 +523,8 @@ rootfs_prepare: prepare
 	rm -rf $(SYSDRV_DIR_OUT_ROOTFS)
 	mkdir -p $(SYSDRV_DIR_OUT_ROOTFS)
 	tar xf $(SYSDRV_DIR)/tools/board/rootfs_script.tar -C $(SYSDRV_DIR_OUT_ROOTFS)
+# The VPN Buildroot rootfs supplies its own libc and compiler runtime.
+ifneq ($(TARGET_ROOTFS):$(BUILDROOT_DEFCONFIG),buildroot:luckfox_pico_vpn_defconfig)
 	tar xjf $(TOOLCHAIN_DIR)/$(TOOLCHAIN_RUNTIME_LIB)/$(TOOLCHAIN_RUNTIME_LIB_C) -C $(SYSDRV_DIR_OUT_ROOTFS)
 	pushd $(SYSDRV_DIR_OUT_ROOTFS)/lib/ ; mv -fv \
 		libasan_preinit.o \
@@ -536,6 +539,7 @@ rootfs_prepare: prepare
 		libinproctrace.so \
 		$(SYSDRV_DIR_OUT_BOARD); \
 	popd
+endif
 
 ##########################################################################################
 #	build busybox
@@ -605,6 +609,7 @@ buildroot_create:
 	cp ${HCITOOL_TOOL_PATH}/*.patch $(BUILDROOT_DIR)/$(BUILDROOT_VER)/package/bluez5_utils/
 	cp ${MPV_PATCH_PATH}/*.patch $(BUILDROOT_DIR)/$(BUILDROOT_VER)/package/mpv/
 	cp ${BUSYBOX_PATCH_PATH}/*.patch  $(BUILDROOT_DIR)/$(BUILDROOT_VER)/package/busybox/
+	$(BUILDROOT_CUSTOM_PACKAGE_SETUP) $(BUILDROOT_DIR)/$(BUILDROOT_VER)
 
 buildroot: prepare
 	@echo -e "$(C_GREEN) ==sysdrv== build buildroot   $(C_NORMAL)"
@@ -619,6 +624,7 @@ buildroot: prepare
 		cp ${MPV_PATCH_PATH}/*.patch $(BUILDROOT_DIR)/$(BUILDROOT_VER)/package/mpv/ ;\
 		cp ${BUSYBOX_PATCH_PATH}/*.patch  $(BUILDROOT_DIR)/$(BUILDROOT_VER)/package/busybox/ ;\
 	);
+	$(BUILDROOT_CUSTOM_PACKAGE_SETUP) $(BUILDROOT_DIR)/$(BUILDROOT_VER)
 
 	$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) $(BUILDROOT_DEFCONFIG) -C $(BUILDROOT_DIR)/$(BUILDROOT_VER) 
 	$(SYSDRV_DIR)/tools/board/mirror_select/buildroot_mirror_select.sh $(BUILDROOT_DIR)/$(BUILDROOT_VER)/.config
