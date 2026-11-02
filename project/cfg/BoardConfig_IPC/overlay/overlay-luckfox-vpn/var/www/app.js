@@ -316,11 +316,20 @@ function renderBackups(data) {
     });
     button(actions, "Restore", () => {
       if (!confirm(`Restore ${backup.file}? This replaces VPN keys, clients and settings and restarts wg0. Keep an off-device backup first. Continue?`)) return;
-      act(() => request("restore", {file: backup.file}));
+      act(() => request("restore", {file: backup.file}), {
+        workingMessage: "Restoring backup...",
+        successMessage: "Backup restored successfully.",
+        failurePrefix: "Backup restore failed: ",
+        refreshFailurePrefix: "Backup restored successfully, but refreshing device status failed: "
+      });
     }, true);
     button(actions, "Delete", () => {
       if (!confirm(`Permanently delete ${backup.file}? This cannot be undone. Download a copy first if you may need it.`)) return;
-      act(() => request("backup-delete", {file: backup.file}));
+      act(() => request("backup-delete", {file: backup.file}), {
+        refreshBackups: true,
+        refreshFailurePrefix: "Backup deleted, but refreshing device status failed: ",
+        backupRefreshFailurePrefix: "Backup deleted, but refreshing the backup list failed: "
+      });
     }, true);
     return row;
   });
@@ -331,6 +340,9 @@ function renderBackups(data) {
     byId("backup-rows").append(row);
   }
 }
+async function loadBackups() {
+  renderBackups(await request("backups"));
+}
 async function download(route, name) {
   const blob = await request(route, undefined, true), url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -339,10 +351,10 @@ async function download(route, name) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function refresh() {
-  renderStatus(await request("status"));
+async function refresh(loadBackupList = false) {
+  if (page !== "backups") renderStatus(await request("status"));
   if (page === "clients" || page === "dashboard") renderClients(await request("clients"));
-  if (page === "backups") renderBackups(await request("backups"));
+  if (loadBackupList && page === "backups") await loadBackups();
   if (enabled) byId("protected").hidden = false;
 }
 function setBusy(value) {
@@ -352,27 +364,48 @@ function setBusy(value) {
   });
   if (!value && pendingPage && enabled) {
     pendingPage = false;
-    poll();
+    poll(page === "backups");
   }
 }
-async function act(action) {
+async function act(action, options = {}) {
   if (busy || !enabled) return;
   setBusy(true);
-  text("message", "Working...");
+  text("message", options.workingMessage || "Working...");
   try {
-    const result = await action();
-    text("message", result?.live === false ? "Saved. Changes are not live until WireGuard starts." : "Done.");
-    await refresh();
-  } catch (error) {
-    if (error.name !== "AbortError") text("message", error.message);
+    let result;
+    try {
+      result = await action();
+    } catch (error) {
+      if (error.name !== "AbortError") text("message", (options.failurePrefix || "") + error.message);
+      return;
+    }
+    text("message", options.successMessage ||
+      (result?.live === false ? "Saved. Changes are not live until WireGuard starts." : "Done."));
+    try {
+      await refresh();
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        text("message", (options.refreshFailurePrefix || "") + error.message);
+      }
+      return;
+    }
+    if (options.refreshBackups && page === "backups" && !pendingPage) {
+      try {
+        await loadBackups();
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          text("message", (options.backupRefreshFailurePrefix || options.refreshFailurePrefix || "") + error.message);
+        }
+      }
+    }
   } finally {
     setBusy(false);
   }
 }
-async function poll() {
+async function poll(loadBackupList = false) {
   if (busy || !enabled || document.hidden) return;
   setBusy(true);
-  try { await refresh(); text("message", ""); }
+  try { await refresh(loadBackupList); text("message", ""); }
   catch (error) { if (error.name !== "AbortError") text("message", error.message); }
   finally { setBusy(false); }
 }
@@ -384,7 +417,7 @@ document.querySelectorAll("[data-page]").forEach(element => element.addEventList
   for (const item of document.querySelectorAll("[data-page]")) item.removeAttribute("aria-current");
   element.setAttribute("aria-current", "page");
   text("page-title", element.textContent);
-  if (busy) pendingPage = true; else poll();
+  if (busy) pendingPage = true; else poll(page === "backups");
 }));
 byId("add-client").addEventListener("submit", event => {
   event.preventDefault();
@@ -402,7 +435,16 @@ byId("new-client").addEventListener("click", () => {
   byId("client-name").focus();
 });
 byId("cancel-add").addEventListener("click", () => byId("add-dialog").close());
-byId("create-backup").addEventListener("click", () => act(() => request("backup-create", {})));
+byId("create-backup").addEventListener("click", () => act(() => request("backup-create", {}), {
+  refreshBackups: true,
+  refreshFailurePrefix: "Backup created, but refreshing device status failed: ",
+  backupRefreshFailurePrefix: "Backup created, but refreshing the backup list failed: "
+}));
+byId("refresh-backups").addEventListener("click", () => act(() => loadBackups(), {
+  workingMessage: "Refreshing backups...",
+  successMessage: "Backup list refreshed.",
+  refreshFailurePrefix: "Backup list refreshed, but refreshing device status failed: "
+}));
 byId("upload-backup").addEventListener("submit", event => {
   event.preventDefault();
   const file = byId("backup-file").files[0];
@@ -416,6 +458,10 @@ byId("upload-backup").addEventListener("submit", event => {
     const result = await request("backup-upload", file, false, true);
     byId("upload-backup").reset();
     return result;
+  }, {
+    refreshBackups: true,
+    refreshFailurePrefix: "Backup uploaded, but refreshing device status failed: ",
+    backupRefreshFailurePrefix: "Backup uploaded, but refreshing the backup list failed: "
   });
 });
 byId("close-qr").addEventListener("click", closeQR);

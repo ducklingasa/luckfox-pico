@@ -31,6 +31,12 @@ supervise() {
 		wait "$child"
 		child=
 	done
+	backend=/opt/vpn-web/vpn-native
+	if [ ! -f "$backend" ] || [ ! -x "$backend" ] || [ -L "$backend" ] ||
+		[ "$(stat -c '%u:%a' "$backend")" != 0:755 ]; then
+		echo "S49httpd: native backend unavailable or unsafe" >&2
+		exit 1
+	fi
 	while :; do
 		address=$(ip -4 -o addr show dev eth0 scope global 2>/dev/null |
 			awk 'NR == 1 { split($4, a, "/"); print a[1]; exit }')

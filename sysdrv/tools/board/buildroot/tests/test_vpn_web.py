@@ -38,15 +38,17 @@ class WebTests(unittest.TestCase):
         self.wg, self.backups = root / "wg", root / "backups"
         for directory in (self.auth, self.run / "sessions", self.wg / "configs", self.backups):
             directory.mkdir(parents=True, mode=0o700)
+        self.run.chmod(0o700)
         self.settings = root / "setupVars.conf"
         self.settings.write_text((OVERLAY / "etc/pivpn/wireguard/setupVars.conf").read_text())
         self.auth.joinpath("setup-token").write_text("a" * 64 + "\n")
         for name, value in (("AUTH", self.auth), ("RUN", self.run), ("WG", self.wg),
-                            ("BACKUPS", self.backups), ("SETTINGS", self.settings)):
+                            ("BACKUPS", self.backups)):
             patcher = patch.object(web, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
         self.clock = patch.object(web, "uptime", return_value=1000.0).start()
+        patch.object(web, "STORAGE_UID", os.geteuid()).start()
         self.addCleanup(patch.stopall)
         self.password = "A unique test 42"
         self.cookie = ""
@@ -122,6 +124,8 @@ class WebTests(unittest.TestCase):
         self.assertTrue(web.authenticated(env))
         self.clock.return_value += 1
         self.assertFalse(web.authenticated(env))
+        self.assertEqual(1, len(list((self.run / "sessions").iterdir())))
+        self.request("logout", {})
         self.assertEqual([], list((self.run / "sessions").iterdir()))
 
     def test_logout_revokes_only_current_session_and_is_idempotent(self):
@@ -156,7 +160,7 @@ class WebTests(unittest.TestCase):
         page = self.request("app")
         self.assertEqual(302, page[0])
         self.assertEqual("/", dict(page[3])["Location"])
-        for route in ("status", "clients", "backups", "client-config", "client-qr", "backup-download"):
+        for route in ("backups", "client-config", "client-qr", "backup-download"):
             self.assert_error(401, lambda route=route: self.request(route))
         for route in ("client-add", "leds", "restore", "backup-create", "backup-delete", "backup-upload"):
             self.assert_error(401, lambda route=route: self.request(route, {}))
@@ -184,7 +188,7 @@ class WebTests(unittest.TestCase):
         web.rate_limit(1061)
         self.provision()
         for index in range(8):
-            (self.run / "sessions" / (f"{index:064x}")).write_text("1000")
+            web.atomic(self.run / "sessions" / (f"{index:064x}"), "1000")
         self.assert_error(429, self.sign_in)
 
     def test_reboot_uptime_invalidates_sessions(self):
@@ -216,14 +220,11 @@ class WebTests(unittest.TestCase):
             self.assert_error(504, lambda: web.command(["test"]))
             kill.assert_called_once_with(12345, web.signal.SIGTERM)
 
-    def test_down_interface_keeps_configured_clients_without_secrets(self):
-        self.wg.joinpath("wg0.conf").write_text("### begin phone ###\nPrivateKey = secret\n### end phone ###\n")
-        self.wg.joinpath("configs/clients.txt").write_text("phone public 100 10.6.0.2\n")
-        with patch.object(web, "lock", return_value=contextlib.nullcontext()), patch.object(web, "wg_running", return_value=False):
-            data = web.clients()
-        self.assertEqual("phone", data["clients"][0]["name"])
-        self.assertIsNone(data["clients"][0]["rx"])
-        self.assertNotIn("secret", json.dumps(data))
+    def test_python_does_not_implement_native_dashboard_routes(self):
+        for route in ("status", "clients"):
+            self.assert_error(404, lambda: self.request(route))
+        for name in ("status", "clients", "metrics", "settings"):
+            self.assertFalse(hasattr(web, name), name)
 
     def test_led_partial_error_reports_resulting_state(self):
         with patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)), patch.object(web, "led_state", return_value="mixed"):
@@ -449,14 +450,6 @@ class WebTests(unittest.TestCase):
         self.assertEqual([web.UPLOAD_LIMIT], validated)
         self.assertLessEqual(stream.largest, 65536)
         self.assertEqual(web.UPLOAD_LIMIT, (self.backups / result["file"]).stat().st_size)
-
-    def test_metrics_actual_host_shape(self):
-        usage = web.shutil.disk_usage("/")
-        with patch.object(web.shutil, "disk_usage", return_value=usage):
-            data = web.metrics()
-        self.assertGreater(data["cpu"]["total"], 0)
-        self.assertGreater(data["memory"]["total"], 0)
-        self.assertEqual({"eth0", "wg0"}, set(data["networks"]))
 
     def test_public_state_accepts_no_query_fields(self):
         data = json.loads(self.request("state")[2])

@@ -14,6 +14,197 @@ not all been confirmed; this is not yet a fully board-qualified release.
 The requirements and remaining acceptance criteria are in
 [WG_GUI_PLAN.md](./WG_GUI_PLAN.md).
 
+### Native dashboard backend (2026-11-01)
+
+The fast-backend implementation from [WG_FAST_BACKEND_PLAN.md](./WG_FAST_BACKEND_PLAN.md)
+is delivered and **native dashboard routing is permanent** following the
+user-collected board results and approved cleanup. Native complete-refresh p95
+was 105 ms idle and 141 ms during VPN activity, with no observed errors and
+38.5 MiB minimum sampled available memory in both runs. Baseline comparison
+limits and remaining qualification are recorded in the fast-backend plan.
+
+- A local [Buildroot package](./sysdrv/tools/board/buildroot/packages/vpn-web)
+  installs `/opt/vpn-web/vpn-native`. Authenticated native `GET status` and
+  `GET clients` use direct procfs/sysfs, `statvfs`, and bounded Generic/Route
+  Netlink. They never execute Python, `wg`, `ip`, or a shell.
+- JSON-C is an explicit dependency, with unsigned 64-bit JSON numbers rather
+  than double-based counter serialization. The package is built with the VPN
+  ARM/uClibc compiler, PIE, stack protection, RELRO/NOW and strict warnings.
+  Raw netlink avoids another library dependency; its validation and fragmented
+  peer merging are covered by standalone parser/collector tests.
+- ARM execution exposed a real JSON-C/uClibc `duplocale` crash during verifier
+  parsing, including with an explicit C locale. The VPN defconfig now declares
+  a [target compatibility patch](./sysdrv/tools/board/buildroot/patches/json-c/0001-use-existing-locale-fallback-on-uclibc.patch)
+  selecting JSON-C's existing `setlocale` fallback on uClibc only. CGI processes
+  are single-threaded and separate, so locale changes are not shared between
+  requests. Other libcs keep the original thread-local path. The ARM fixture
+  tests successful authenticated JSON parsing, not merely interpreter loading
+  or a missing-storage error.
+- Other routes, including public `state`, private HTML/downloads and all POST
+  operations, retain Python dispatch and its bounded exclusive request gate.
+  Native reads bypass that gate, not the authentication or shared VPN locks.
+  Authentication is released before VPN collection; VPN locks are released
+  before JSON serialization/output. Exclusive writers still return explicit
+  HTTP 409 conflicts. Native collection has a two-second netlink work budget
+  and a five-second collection deadline. Nonblocking response writes have a
+  separate five-second output budget, without either lock; slow/disconnected
+  consumers cannot retain a native CGI indefinitely. A failed partial write
+  is logged and closed, not replaced by a misleading second JSON response.
+- Native and Python readers share descriptor-relative, no-symlink, root-only
+  authentication storage checks, the existing verifier/session formats and
+  fixed 1,800-second uptime lifetime. The expiry comparison uses
+  `issued <= now < issued + 1800`, avoiding subtraction rounding at the exact
+  fractional-time boundary. Reads do not delete or renew sessions; cleanup
+  remains in initialization and Python setup/login/logout. Corrupt timestamps,
+  verifiers or inaccessible storage fail explicitly. PBKDF2 remains at
+  600,000 iterations; password rules, rate limiting, session cap and cookies
+  are unchanged.
+- Invalid client keys, IPv4 addresses, timestamps or ambiguous peer markers
+  now fail explicitly in the native implementation. Limits are 128 KiB per
+  metadata/settings file, 1,024 native peers/rows, 4 KiB per settings word,
+  8 KiB of cookie input and 1 MiB of serialized response. These are defensive
+  implementation bounds, not a nine-client limit; the existing /24 pool is
+  unchanged. Optional missing sensor values retain their nullable/unavailable
+  behavior; required I/O failures are not presented as fresh data.
+- Browser URLs, sequential page-aware polling, 10-second cadence, hidden-tab
+  suppression, sampling, cancellation, logout and history behavior are unchanged.
+
+#### Permanent native image wiring
+
+[The final-overlay hook](./project/cfg/BoardConfig_IPC/luckfox-vpn-overlay-post.sh)
+runs after every project overlay and installs
+`/var/www/cgi-bin/vpn.cgi -> /opt/vpn-web/vpn-native`. The same hook runs inside
+fakeroot during VPN rootfs ext4 population, so the backend, HTTP
+configuration and web-root directories are root-owned without requiring a
+privileged SDK build. The VPN image hook requires a dynamically linked host
+`mkfs.ext4` (host `e2fsprogs`) and passes its absolute path to the SDK image
+script. The SDK's bundled static formatter cannot observe fakeroot ownership
+changes and previously produced UID/GID 1000 files, preventing HTTP startup.
+The VPN board uses the source image script, avoiding stale staged copies on
+firmware-only rebuilds. Other boards retain the bundled formatter by default.
+The actual SDK image pipeline is covered by an ext4 inode ownership/mode regression, not just a
+direct host formatter test. The
+[HTTP configuration](./project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-vpn/etc/httpd.conf)
+does not force `.cgi` files through `/bin/sh`; BusyBox executes the native
+ELF directly.
+
+[S49httpd](./project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-vpn/etc/init.d/S49httpd)
+initializes authentication and verifies that the fixed native executable is
+a regular, non-symlink, root-owned file with mode 0755 before opening the
+listener. Missing or unsafe binaries stop startup; there is no fallback.
+Restart the service normally when needed:
+
+```sh
+/etc/init.d/S49httpd restart
+```
+
+The backend selector, deployment-choice file, legacy shell CGI and duplicate
+Python dashboard handlers/settings/metrics collectors have been removed.
+Incremental image assembly removes stale selector/configuration/legacy CGI
+files and replaces the old volatile CGI link. Python remains required for
+startup initialization, setup/login/logout, private HTML, management, backups,
+downloads and QR codes. The native controller serializes these cold requests
+under its bounded request gate and executes Python directly. This cleanup does
+not change credentials, sessions, client data, CLI formats or VPN configuration.
+There is no runtime backend rollback; reverting requires a previous firmware
+version while preserving persistent data.
+
+#### Validation and remaining qualification
+
+The native [contract/HTTP/image suite](./sysdrv/tools/board/buildroot/tests/test_vpn_web_native.py)
+uses isolated storage, frozen counters/clocks, and the actual native netlink
+implementation for BusyBox HTTP tests. Separate live-peer unit fixtures do not
+stand in for those transport tests. Coverage includes 0-9 clients, large
+metadata limits, exact integers, quoting, expiry, malformed/symlink/FIFO storage,
+concurrent readers, writer/logout conflicts, helper-execution tracing, collection
+and output deadlines, root-owned ext4 wiring, permanent native routing and
+incremental removal of obsolete deployment files.
+
+After permanent-routing cleanup, all **72 regression tests passed**, including
+native BusyBox 1.36.1 transport for authentication, private HTML, dashboard,
+uploads/downloads and cold-gate behavior, plus the ARM/QEMU fixture. The native
+sanitizer suite passed **25 tests** (26 discovered; ARM-only intentionally
+skipped), with a further focused sanitizer check for unsupported native-route
+methods. The ARM package and complete firmware were rebuilt. Final-image
+inspection confirmed the direct native CGI link, root-owned web/backend paths,
+absence of all three obsolete deployment files and removal of duplicate Python
+dashboard handlers while retaining cold-operation functions.
+
+Before permanent-routing cleanup on 2026-11-01, all **69 regression tests passed**,
+including actual BusyBox 1.36.1 native/legacy HTTP and the authenticated ARM/QEMU fixture.
+The native sanitizer run passed **22 tests** (23 discovered; its ARM-only
+test was intentionally skipped). The final ARM package also rebuilt successfully
+against patched JSON-C. Standalone netlink tests passed under host sanitizers
+and ARM/QEMU; a real read-only Route Netlink exchange returned loopback
+`127.0.0.1/8` with validated sender/header port IDs. Real WireGuard Generic
+Netlink was not exercised by those host tests; subsequent live-board dashboard
+measurements are recorded in the fast-backend plan.
+
+Run existing and new tests with a host BusyBox 1.36.1 supporting the VPN HTTP
+features (BusyBox 1.30 is intentionally skipped):
+
+```sh
+VPN_TEST_BUSYBOX=/path/to/host/busybox python3 -m unittest discover \
+  -s sysdrv/tools/board/buildroot/tests -p 'test_vpn_web*.py'
+VPN_TEST_BUSYBOX=/path/to/host/busybox VPN_TEST_SANITIZERS=1 \
+  python3 -m unittest discover -s sysdrv/tools/board/buildroot/tests \
+  -p 'test_vpn_web_native.py'
+VPN_TEST_ARM=1 python3 -m unittest discover \
+  -s sysdrv/tools/board/buildroot/tests -p 'test_vpn_web_native.py'
+```
+
+The ARM fixture requires the built VPN toolchain, JSON-C staging library and
+`qemu-arm`. It verifies 64-bit JSON counters and filesystem arithmetic, not
+real WireGuard hardware behavior. To build a suitable host HTTP fixture, copy
+the existing BusyBox 1.36.1 source to a temporary directory, run `make clean`
+and `make allnoconfig`, merge
+[busybox-httpd.config](./sysdrv/tools/board/buildroot/tests/busybox-httpd.config)
+with Buildroot's `support/kconfig/merge_config.sh -m`, then run
+`yes '' | make oldconfig` and `make`. Never rebuild the target source in place
+with a host compiler.
+
+When rebuilding an already-built JSON-C package after adding the compatibility
+patch, run `json-c-dirclean` before rebuilding JSON-C and `vpn-web`; a fresh VPN
+defconfig build applies the declared global patch automatically. Likewise,
+re-run custom-package installation and `vpn-web-dirclean` when changing local
+native sources, so Buildroot refreshes its source snapshot.
+
+Normal SDK builds register both custom packages and refresh the VPN defconfig
+even when the Buildroot tree already exists. If a previous build stopped with
+`native CGI missing from assembled rootfs`, rerun the normal VPN build after
+updating these scripts; do not bypass the final-overlay check or manually copy
+the ELF without its target libraries. If JSON-C was already built before the
+locale patch, run `json-c-dirclean` as described above before retrying.
+The registration regression covers fresh and existing trees and repeated
+installation. After this fix, a normal Buildroot defconfig/build selected
+`vpn-web` and JSON-C, applied the locale patch, and regenerated `rootfs.tar`.
+Its native ELF and runtime libraries passed the final-overlay hook and QEMU
+loading in isolated storage; the authenticated ARM fixture also passed.
+
+The image ownership fix passed eight focused image/service tests. A complete
+VPN firmware-only rebuild regenerated `rootfs.img` and `sd_update.img`;
+`debugfs` verified UID/GID 0:0 for all 15 checked web/backend paths and parent
+directories, executable modes 0755, configuration mode 0644 and the public CGI
+symlink in the final rootfs image. No board was flashed by these checks.
+
+Standalone [netlink tests](./sysdrv/tools/board/buildroot/packages/vpn-web/src/netlink_test.c)
+run with GCC ASan/UBSan and also with the ARM compiler under QEMU. No host or
+prebuilt target binaries are committed.
+
+An inherited endpoint-formatting limitation was reproduced: the image's
+uClibc `getnameinfo` omits IPv6 scope identifiers, as does the existing bundled
+`wg` CLI using that function. Native numeric-only formatting deliberately
+matches the deployed CLI on each libc (glibc preserves scopes); this rollout
+does not silently change endpoint strings or perform DNS lookups. Correcting
+the shared target-libc limitation is separate from the drop-in backend.
+
+**Remaining gates:** smoke-test the permanent-routing image's startup,
+authentication, browser management/QR/history and live reader/writer behavior;
+record scoped-endpoint limitations and any exceptions. Live-board idle/active
+measurements meet the observed latency/memory/error goals. A matched visible-tab
+legacy baseline is still needed for controlled comparison claims; neither
+host/QEMU checks nor interface counters prove unaffected maximum VPN throughput.
+
 ## Delivered behavior
 
 - Token-gated, password-only first setup; no username or Linux/SSH credential
@@ -40,7 +231,9 @@ The requirements and remaining acceptance criteria are in
   observed on hardware when another request was still running.
 - Dashboard; system/settings overview; client list/add/enable/disable/remove,
   profile download and SVG QR endpoint; backup create/list/download/upload,
-  restore and delete.
+  restore and delete. The backup list loads when opened and after create,
+  upload or delete; it does not refresh periodically and has a manual Refresh
+  button. Restore reports an explicit success or failure.
 - Overview counters come directly from procfs/sysfs and filesystem statistics,
   not btop. Browser sampling computes CPU utilization and `eth0`/`wg0` rates;
   charts retain at most 30 samples in memory. There is no process table,
@@ -66,8 +259,9 @@ Paths below are relative to the repository.
 |---|---|
 | Root HTTP service/supervisor | [S49httpd](./project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-vpn/etc/init.d/S49httpd) |
 | BusyBox HTTP configuration | [httpd.conf](./project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-vpn/etc/httpd.conf) |
-| Small shell entry point / request gate | [vpn.cgi](./project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-vpn/var/www/cgi-bin/vpn.cgi) |
-| Python standard-library backend | [webui.py](./project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-vpn/opt/vpn-web/webui.py) |
+| Native front controller and collectors | [native package](./sysdrv/tools/board/buildroot/packages/vpn-web/src) |
+| Final permanent native image wiring | [overlay/image hook](./project/cfg/BoardConfig_IPC/luckfox-vpn-overlay-post.sh) |
+| Python standard-library cold-operation backend | [webui.py](./project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-vpn/opt/vpn-web/webui.py) |
 | Private management HTML | [app.html](./project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-vpn/opt/vpn-web/app.html) |
 | Public login/setup shell and local assets | [web root](./project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-vpn/var/www) |
 | Shared LED-only helper | [system-leds](./project/cfg/BoardConfig_IPC/overlay/overlay-luckfox-vpn/usr/sbin/system-leds) |
@@ -81,8 +275,8 @@ Paths below are relative to the repository.
 
 The existing image already selects Python 3 and SSL. The user approved using
 its standard library instead of writing form parsing, JSON, authentication,
-sessions and archive handling in shell. Python starts only for each CGI
-request: no web framework, pip package, database, or persistent application
+sessions and archive handling in shell. Python starts only for cold
+CGI requests: no web framework, pip package, database, or persistent application
 server was added. Zlib is now explicitly selected, rather than relying on
 aiohttp's indirect selection.
 
@@ -94,7 +288,7 @@ The public `/state` operation discloses only whether setup is required.
 Direct unauthenticated management-page navigation redirects to login;
 unauthenticated data/action requests return HTTP 401.
 
-The shell gate serializes CGI execution before starting Python. It waits at
+The native controller's gate serializes cold CGI operations before starting Python. It waits at
 most about 0.5 seconds for the previous request to finish and otherwise returns
 JSON HTTP 503 `busy`. This also absorbs the short interpreter-shutdown interval
 after a completed response. CLI activity can independently return a retryable
@@ -337,7 +531,7 @@ Theme persistence supersedes the earlier reset-on-reload behavior. A focused
 Node test checks default/invalid values, persistence across page instances,
 application before DOMContentLoaded, tab synchronization and blocked storage:
 `node sysdrv/tools/board/buildroot/tests/test_vpn_theme.js`.
-The current 45 backend/HTTP/service tests pass after the UI changes.
+The original 45 backend/HTTP/service tests passed after the UI changes.
 The upload-filename follow-up was also checked in the browser JavaScript
 runtime: the upload handler sends the original filename header, preserves the
 raw File body and rejects invalid filenames before sending a request.

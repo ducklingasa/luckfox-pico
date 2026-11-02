@@ -2263,7 +2263,14 @@ function build_mkimg() {
 
 	case $fs_type in
 	ext4)
-		$RK_PROJECT_TOOLS_MKFS_EXT4 $src $dst $part_size
+		if [ "$part_name" = "$GLOBAL_ROOT_FILESYSTEM_NAME" ] && [ -n "$RK_ROOTFS_IMAGE_SCRIPT" ]; then
+			local image_script_dir
+			image_script_dir=$(dirname "$(realpath "$BOARD_CONFIG")")
+			fakeroot -- bash "$image_script_dir/$RK_ROOTFS_IMAGE_SCRIPT" --image \
+				"$RK_PROJECT_TOOLS_MKFS_EXT4" "$src" "$dst" "$part_size" || return $?
+		else
+			$RK_PROJECT_TOOLS_MKFS_EXT4 $src $dst $part_size
+		fi
 		;;
 	jffs2)
 		$RK_PROJECT_TOOLS_MKFS_JFFS2 $src $dst $part_size
@@ -2497,6 +2504,9 @@ function post_overlay() {
 				$tmp_path/overlay/$overlay_dir/* $RK_PROJECT_PACKAGE_ROOTFS_DIR/
 		fi
 	done
+	if [ -n "$RK_POST_OVERLAY_SCRIPT" ]; then
+		bash "$tmp_path/$RK_POST_OVERLAY_SCRIPT" || return $?
+	fi
 }
 
 function __RUN_PRE_BUILD_OEM_SCRIPT() {
@@ -2554,7 +2564,7 @@ function build_firmware() {
 	fi
 
 	__RUN_POST_BUILD_SCRIPT
-	post_overlay
+	post_overlay || return $?
 
 	if [ -n "$GLOBAL_INITRAMFS_BOOT_NAME" ]; then
 		build_mkimg boot $RK_PROJECT_PACKAGE_ROOTFS_DIR

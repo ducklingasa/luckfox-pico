@@ -626,6 +626,7 @@ buildroot: prepare
 	);
 	$(BUILDROOT_CUSTOM_PACKAGE_SETUP) $(BUILDROOT_DIR)/$(BUILDROOT_VER)
 
+	cp $(SYSDRV_DIR)/tools/board/buildroot/luckfox_pico_vpn_defconfig $(BUILDROOT_DIR)/$(BUILDROOT_VER)/configs/
 	$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) $(BUILDROOT_DEFCONFIG) -C $(BUILDROOT_DIR)/$(BUILDROOT_VER) 
 	$(SYSDRV_DIR)/tools/board/mirror_select/buildroot_mirror_select.sh $(BUILDROOT_DIR)/$(BUILDROOT_VER)/.config
 	$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) source -C $(BUILDROOT_DIR)/$(BUILDROOT_VER) 

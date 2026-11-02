@@ -48,6 +48,9 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px 
 label { display: block; font-size: .9rem; }
 input { display: block; margin: .4rem 0; padding: .65rem; background: var(--input); color: var(--text); border: 1px solid var(--border); border-radius: 6px; max-width: 100%; font: inherit; }
 .table-wrap { overflow-x: auto; } table { width: 100%; border-collapse: collapse; text-align: left; font-size: .85rem; }
+.backup-actions-header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.backup-actions-header button { display: inline-flex; align-items: center; justify-content: center; min-width: 2.5rem; min-height: 2.5rem; padding: .3rem .5rem; line-height: 1; }
+.refresh-icon { display: block; width: 1.5rem; height: 1.5rem; background: var(--brand); mask: url("/refresh.png") center / contain no-repeat; -webkit-mask: url("/refresh.png") center / contain no-repeat; }
 td, th { padding: .85rem .65rem; border-bottom: 1px solid var(--border); vertical-align: top; }
 td button { margin: 0 .3rem .4rem 0; font-size: .75rem; }
 td small { display: block; color: var(--muted); }

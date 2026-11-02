@@ -1,0 +1,42 @@
+From: LuckFox VPN maintainers
+Subject: [PATCH] json_tokener: use the existing locale fallback on uClibc
+
+The VPN ARM/uClibc build crashes inside duplocale() when JSON-C parses
+the configured verifier. LC_GLOBAL_LOCALE is not handled safely, and
+duplicating an explicit C locale also crashes in the collation copy.
+
+Use JSON-C's existing setlocale fallback on this libc. Native CGI requests
+are single-threaded, separate processes, so locale changes are process-local.
+Keep the thread-local implementation unchanged for other libcs.
+
+Upstream-Status: Inappropriate [target libc compatibility]
+
+--- a/json_tokener.c
++++ b/json_tokener.c
+@@ -298,7 +298,7 @@
+ 	unsigned int nBytes = 0;
+ 	unsigned int *nBytesp = &nBytes;
+ 
+-#ifdef HAVE_USELOCALE
++#if defined(HAVE_USELOCALE) && !defined(__UCLIBC__)
+ 	locale_t oldlocale = uselocale(NULL);
+ 	locale_t newloc;
+ #elif defined(HAVE_SETLOCALE)
+@@ -320,7 +320,7 @@
+ 		return NULL;
+ 	}
+ 
+-#ifdef HAVE_USELOCALE
++#if defined(HAVE_USELOCALE) && !defined(__UCLIBC__)
+ 	{
+ 		locale_t duploc = duplocale(oldlocale);
+ 		newloc = newlocale(LC_NUMERIC_MASK, "C", duploc);
+@@ -1229,7 +1229,7 @@
+ 			tok->err = json_tokener_error_parse_eof;
+ 	}
+ 
+-#ifdef HAVE_USELOCALE
++#if defined(HAVE_USELOCALE) && !defined(__UCLIBC__)
+ 	uselocale(oldlocale);
+ 	freelocale(newloc);
+ #elif defined(HAVE_SETLOCALE)

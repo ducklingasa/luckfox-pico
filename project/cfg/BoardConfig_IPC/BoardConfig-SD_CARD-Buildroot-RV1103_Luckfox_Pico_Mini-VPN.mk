@@ -92,6 +92,11 @@ export RK_PRE_BUILD_USERDATA_SCRIPT=luckfox-userdata-pre.sh
 
 # remove camera/telnet/test init scripts (runs before the overlays are copied)
 export RK_POST_BUILD_SCRIPT=luckfox-vpn-post.sh
+# Install the CGI link only after all overlays, retaining the Buildroot binary.
+export RK_POST_OVERLAY_SCRIPT=luckfox-vpn-overlay-post.sh
+export RK_ROOTFS_IMAGE_SCRIPT=luckfox-vpn-overlay-post.sh
+# Firmware-only rebuilds must not use a stale staged copy of the image script.
+export RK_PROJECT_TOOLS_MKFS_EXT4="$SDK_SYSDRV_DIR/tools/pc/e2fsprogs/mkfs_ext4.sh"
 
 # declare overlay directory (overlay-luckfox-vpn last: it overrides sshd_config)
 export RK_POST_OVERLAY="overlay-luckfox-config overlay-luckfox-buildroot-init overlay-luckfox-buildroot-shadow overlay-luckfox-vpn"

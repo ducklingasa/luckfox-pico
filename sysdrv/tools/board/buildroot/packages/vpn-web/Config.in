@@ -1,0 +1,7 @@
+config BR2_PACKAGE_VPN_WEB
+	bool "vpn-web native CGI"
+	depends on BR2_TOOLCHAIN_HAS_SYNC_4
+	select BR2_PACKAGE_JSON_C
+	help
+	  Native authenticated WireGuard dashboard reads, with serialized
+	  Python management routes and deploy-time legacy rollback.

@@ -7,13 +7,14 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
 import secrets
-import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,14 +25,15 @@ AUTH = Path("/userdata/webui")
 RUN = Path("/run/webui")
 WG = Path("/userdata/wireguard")
 BACKUPS = Path("/userdata/vpn-backup")
-SETTINGS = Path("/etc/pivpn/wireguard/setupVars.conf")
 SESSION_SECONDS = 1800
+STORAGE_UID = 0
 ITERATIONS = 600000
 UPLOAD_LIMIT = 16 * 1024 * 1024
 COOKIE = "vpn_session"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,14}\Z")
 BACKUP = re.compile(r"pivpnbackup-[0-9]{8}-[0-9]{6}(?:-[1-9][0-9]*)?\.tgz\Z")
 SID = re.compile(r"[0-9a-f]{64}\Z")
+ISSUED = re.compile(r"[ \t\r\n\v\f]*[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[ \t\r\n\v\f]*\Z")
 HERE = Path(__file__).resolve().parent
 
 
@@ -108,11 +110,94 @@ def prepare():
 
 def session_id(environ):
     found = []
-    for part in environ.get("HTTP_COOKIE", "").split(";"):
+    cookies = environ.get("HTTP_COOKIE", "")
+    if len(cookies) > 8192:
+        return None
+    for part in cookies.split(";"):
         key, sep, value = part.strip().partition("=")
         if sep and key == COOKIE:
             found.append(value)
     return found[0] if len(found) == 1 and SID.fullmatch(found[0]) else None
+
+
+@contextlib.contextmanager
+def private_directory(path):
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in path.parts[1:]:
+            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+                              os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        info = os.fstat(fd)
+        if info.st_uid != STORAGE_UID or stat.S_IMODE(info.st_mode) != 0o700:
+            raise RuntimeError("invalid private directory")
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def private_file(fd):
+    info = os.fstat(fd)
+    if (info.st_uid != STORAGE_UID or not stat.S_ISREG(info.st_mode) or
+            stat.S_IMODE(info.st_mode) != 0o600):
+        raise RuntimeError("invalid private file")
+
+
+def private_read(directory, name, maximum, missing=False):
+    with private_directory(directory) as parent:
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC |
+                         os.O_NONBLOCK, dir_fd=parent)
+        except FileNotFoundError:
+            if missing:
+                return None
+            raise
+    with os.fdopen(fd, "rb") as handle:
+        private_file(handle.fileno())
+        data = handle.read(maximum + 1)
+    if len(data) > maximum or b"\0" in data:
+        raise RuntimeError("invalid private file content")
+    return data.decode("ascii")
+
+
+@contextlib.contextmanager
+def auth_guard(shared=False):
+    with private_directory(RUN) as parent:
+        fd = os.open("auth.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW |
+                     os.O_CLOEXEC | os.O_NONBLOCK, 0o600, dir_fd=parent)
+    with os.fdopen(fd, "w") as handle:
+        private_file(handle.fileno())
+        try:
+            fcntl.flock(handle, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fail(409, "busy", "Another operation is running. Please retry.")
+        yield
+
+
+def account():
+    text = private_read(AUTH, "auth.conf", 4095, missing=True)
+    if text is None:
+        return None
+    verifier = json.loads(text)
+    if (not isinstance(verifier, dict) or verifier.get("algorithm") != "pbkdf2-sha256" or
+            type(verifier.get("iterations")) is not int or verifier["iterations"] != ITERATIONS or
+            not isinstance(verifier.get("salt"), str) or not SID.fullmatch(verifier["salt"]) or
+            not isinstance(verifier.get("hash"), str) or not SID.fullmatch(verifier["hash"])):
+        raise RuntimeError("unsupported password verifier")
+    return verifier
+
+
+def session_time(sid):
+    text = private_read(RUN / "sessions", sid, 127, missing=True)
+    if text is None:
+        return None
+    if not ISSUED.fullmatch(text):
+        raise RuntimeError("invalid session timestamp")
+    issued = float(text)
+    if not math.isfinite(issued) or issued < 0:
+        raise RuntimeError("invalid session timestamp")
+    return issued
 
 
 def clean_sessions(now):
@@ -120,8 +205,10 @@ def clean_sessions(now):
     for path in (RUN / "sessions").iterdir():
         if not SID.fullmatch(path.name) or not path.is_file() or path.is_symlink():
             raise RuntimeError("invalid session storage")
-        issued = float(path.read_text())
-        if not 0 <= now - issued < SESSION_SECONDS:
+        issued = session_time(path.name)
+        if issued is None:
+            raise RuntimeError("session disappeared while locked")
+        if not issued <= now < issued + SESSION_SECONDS:
             path.unlink()
         else:
             live.append(path.name)
@@ -129,11 +216,14 @@ def clean_sessions(now):
 
 
 def authenticated(environ):
-    with lock(RUN / "auth.lock"):
-        if not (AUTH / "auth.conf").is_file():
+    with auth_guard(shared=True):
+        if account() is None:
             return False
         sid = session_id(environ)
-        return sid is not None and sid in clean_sessions(uptime())
+        if sid is None:
+            return False
+        issued = session_time(sid)
+        return issued is not None and issued <= uptime() < issued + SESSION_SECONDS
 
 
 def check_origin(environ):
@@ -215,8 +305,9 @@ def password_hash(password, salt):
 
 
 def login(action, fields, environ):
-    with lock(RUN / "auth.lock"):
+    with auth_guard():
         if action == "logout":
+            clean_sessions(uptime())
             sid = session_id(environ)
             if sid:
                 (RUN / "sessions" / sid).unlink(missing_ok=True)
@@ -249,9 +340,9 @@ def login(action, fields, environ):
                 "salt": salt.hex(), "hash": password_hash(password, salt)}))
             (AUTH / "setup-token").unlink()
             return {"ok": True}, []
-        verifier = json.loads((AUTH / "auth.conf").read_text())
-        if verifier["algorithm"] != "pbkdf2-sha256" or verifier["iterations"] != ITERATIONS:
-            raise RuntimeError("unsupported password verifier")
+        verifier = account()
+        if verifier is None:
+            raise RuntimeError("credential storage disappeared")
         if len(password) > 128 or not hmac.compare_digest(
                 password_hash(password, bytes.fromhex(verifier["salt"])), verifier["hash"]):
             fail(401, "credentials", "Invalid password.")
@@ -289,19 +380,6 @@ def command(args, timeout=30):
         return output
 
 
-def settings():
-    result = {}
-    for line in SETTINGS.read_text().splitlines():
-        words = shlex.split(line, comments=True)
-        if not words:
-            continue
-        if len(words) != 1 or "=" not in words[0]:
-            raise RuntimeError("invalid server settings")
-        key, value = words[0].split("=", 1)
-        result[key] = value
-    return result
-
-
 def wg_running():
     return Path("/sys/class/net/wg0").exists()
 
@@ -328,86 +406,6 @@ def led_state():
         except (FileNotFoundError, PermissionError):
             return "unavailable"
     return "enabled" if enabled == 3 else "disabled" if disabled == 3 else "mixed"
-
-
-def metrics():
-    mem = {}
-    for line in Path("/proc/meminfo").read_text().splitlines():
-        key, value = line.split(":", 1)
-        mem[key] = int(value.split()[0]) * 1024
-    cpu = [int(x) for x in Path("/proc/stat").read_text().splitlines()[0].split()[1:9]]
-    networks = {}
-    for name in ("eth0", "wg0"):
-        root = Path("/sys/class/net") / name / "statistics"
-        networks[name] = ({"rx": int((root / "rx_bytes").read_text()),
-                           "tx": int((root / "tx_bytes").read_text())} if root.exists() else None)
-    temperatures = []
-    for zone in sorted(Path("/sys/class/thermal").glob("thermal_zone*")):
-        try:
-            temperatures.append({"name": (zone / "type").read_text().strip(),
-                                 "celsius": int((zone / "temp").read_text()) / 1000})
-        except (FileNotFoundError, PermissionError, ValueError):
-            temperatures.append({"name": zone.name, "celsius": None})
-    storage = []
-    for path in ("/", "/userdata"):
-        usage = shutil.disk_usage(path)
-        storage.append({"path": path, "total": usage.total, "used": usage.used, "free": usage.free})
-    return {"uptime": uptime(), "load": list(os.getloadavg()),
-            "cpu": {"total": sum(cpu), "idle": cpu[3] + cpu[4]},
-            "memory": {"total": mem["MemTotal"], "available": mem.get("MemAvailable"),
-                       "swap_total": mem["SwapTotal"], "swap_free": mem["SwapFree"]},
-            "storage": storage, "temperatures": temperatures, "networks": networks}
-
-
-def status():
-    with lock(Path("/run/pivpn.lock"), shared=True):
-        config = settings()
-        if not (WG / "wg0.conf").is_file():
-            fail(503, "not_ready", "WireGuard configuration is unavailable.")
-        values = {key: config.get(key) for key in
-                  ("pivpnHOST", "pivpnPORT", "pivpnNET", "subnetClass",
-                   "pivpnDNS1", "pivpnDNS2", "pivpnMTU", "ALLOWED_IPS")}
-        running = wg_running()
-        address = None
-        listen_port = int(config["pivpnPORT"])
-        if running:
-            listen_port = int(command(["wg", "show", "wg0", "listen-port"]).decode().strip())
-            output = command(["ip", "-4", "-o", "addr", "show", "dev", "wg0"]).decode().split()
-            if "inet" in output:
-                address = output[output.index("inet") + 1]
-    return {"ok": True, "running": running, "interface": "wg0", "settings": values,
-            "address": address, "listen_port": listen_port, "metrics": metrics(), "leds": led_state()}
-
-
-def clients():
-    with lock(Path("/run/pivpn.lock"), shared=True):
-        config = (WG / "wg0.conf").read_text()
-        rows = (WG / "configs/clients.txt").read_text().splitlines()
-        running = wg_running()
-        live = {}
-        if running:
-            # Never request `dump`: it includes private and preshared keys.
-            for field in ("latest-handshakes", "transfer", "endpoints"):
-                for row in command(["wg", "show", "wg0", field]).decode().splitlines():
-                    pub, *values = row.split()
-                    live.setdefault(pub, {})[field] = values
-        result = []
-        for row in rows:
-            name, pub, created, address = row.split()
-            if not NAME.fullmatch(name):
-                raise RuntimeError("invalid client metadata")
-            disabled = "#[disabled] ### begin " + name + " ###" in config.splitlines()
-            if not disabled and "### begin " + name + " ###" not in config.splitlines():
-                raise RuntimeError("client peer missing")
-            data = live.get(pub, {})
-            handshake = int(data["latest-handshakes"][0]) if "latest-handshakes" in data else None
-            result.append({"name": name, "ip": address, "created": int(created),
-                           "enabled": not disabled, "handshake": handshake,
-                           "recent": handshake is not None and 0 <= time.time() - handshake <= 180 and handshake > 0,
-                           "endpoint": data.get("endpoints", [None])[0],
-                           "rx": int(data["transfer"][0]) if "transfer" in data else None,
-                           "tx": int(data["transfer"][1]) if "transfer" in data else None})
-        return {"ok": True, "running": running, "clients": result, "timestamps": "approximate until NTP sync"}
 
 
 def safe_backup(name):
@@ -526,7 +524,7 @@ def dispatch(environ, stream):
                    "client-enable": ("name",), "client-disable": ("name",),
                    "client-remove": ("name",), "backup-create": (), "restore": ("file",),
                    "backup-delete": ("file",), "backup-upload": ()}
-    get_fields = {"state": (), "app": (), "status": (), "clients": (), "backups": (),
+    get_fields = {"state": (), "app": (), "backups": (),
                   "client-config": ("name",), "client-qr": ("name",),
                   "backup-download": ("file",)}
     if route not in post_fields and route not in get_fields:
@@ -554,10 +552,6 @@ def dispatch(environ, stream):
     fields = parse_fields(environ.get("QUERY_STRING", ""), get_fields[route])
     if route == "app":
         return 200, "text/html; charset=utf-8", (HERE / "app.html").read_bytes(), []
-    if route == "status":
-        return response(200, status())
-    if route == "clients":
-        return response(200, clients())
     if route == "backups":
         with lock(Path("/run/pivpn.lock"), shared=True):
             return response(200, {"ok": True, "backups": backup_list()})

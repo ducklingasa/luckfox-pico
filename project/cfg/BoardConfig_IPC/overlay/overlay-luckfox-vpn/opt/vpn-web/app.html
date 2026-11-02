@@ -65,7 +65,7 @@
           <form id="upload-backup" class="actions"><label>Upload .tgz (maximum 16 MiB)<input id="backup-file" type="file" accept=".tgz,.gz,application/gzip" required></label><button type="submit">Upload</button></form>
           <p class="muted">Backups made with this appliance's pivpn backup command before the web UI are supported. Upload the original .tgz without unpacking or converting it. Restoring a VPN backup does not change your web UI password.</p>
           <p class="muted">Uploads keep the original filename and use the upload time as the modified time. A same-named backup is replaced only after validation. Creating a backup retains the newest five archives; uploaded archives are subject to that retention on the next creation.</p>
-          <div class="table-wrap"><table><thead><tr><th>Archive</th><th>Size</th><th>Modified (approx.)</th><th>Actions</th></tr></thead><tbody id="backup-rows"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Archive</th><th>Size</th><th>Modified (approx.)</th><th><div class="backup-actions-header"><span>Actions</span><button id="refresh-backups" class="secondary" type="button" title="Refresh" aria-label="Refresh backups"><span class="refresh-icon" aria-hidden="true"></span></button></div></th></tr></thead><tbody id="backup-rows"></tbody></table></div>
         </article>
       </section>
     </main>

@@ -38,8 +38,8 @@ fi
 
 mkdir -p $(dirname $dst)
 
-echo mkfs.ext4 -d $src -r 1 -N 0 -m 5 -L \"\" -O ^64bit,^huge_file $dst \"$dst_size\"
-mkfs.ext4 -d $src -r 1 -N 0 -m 5 -L "" -O ^64bit,^huge_file $dst "$dst_size"
+echo "${RK_MKFS_EXT4:-mkfs.ext4}" -d $src -r 1 -N 0 -m 5 -L \"\" -O ^64bit,^huge_file $dst \"$dst_size\"
+"${RK_MKFS_EXT4:-mkfs.ext4}" -d $src -r 1 -N 0 -m 5 -L "" -O ^64bit,^huge_file $dst "$dst_size"
 if [ $? != 0 ]; then
 	echo "*** Maybe you need to increase the filesystem size "
 	exit 1
